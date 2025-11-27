@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>V - Zeki Göz Asistan</title>
+<style>
+body{margin:0;background:black;overflow:hidden;}
+canvas{position:absolute;top:0;left:0;}
+video{display:none;}
+#hint{
+position:fixed;bottom:12px;left:50%;
+transform:translateX(-50%);
+color:#fff7a0;font-family:sans-serif;
+font-size:13px;text-align:center;
+}
+</style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="c"></canvas>
+<div id="hint">📱 Ekrana 1 kez dokun → V uyanır ve seni dinler</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+<script>
+const apiKey = "";
+
+const video=document.getElementById("video");
+const canvas=document.getElementById("c");
+const ctx=canvas.getContext("2d");
+canvas.width=innerWidth; canvas.height=innerHeight;
+
+let lookX=0,lookY=0,targetX=0,targetY=0;
+let blink=1;
+const EYE_COLOR="#fff7a0";
+
+const eyeModes=[
+"normal","sad","excited","shock","unamused","more_worried",
+"half_kill","spooked","trauma","being_scary",
+"worried","woozy","angry","wince"
+];
+let eyeMode="normal";
+
+let audioUnlocked=false;
+let lastSeenObjects=[];
+let objectModel=null;
+let chatHistory=[];
+
+function speak(text){
+  if(!audioUnlocked || !text) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang="tr-TR";
+  u.pitch=1.6;
+  u.rate=1.0;
+  u.volume=1;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+// ================== KIRPMA ==================
+setInterval(()=>{
+  blink=0.12;
+  setTimeout(()=>blink=1,120);
+},2400)
+
+setInterval(()=>{
+blink=0.1;
+setTimeout(()=>blink=1,130);
+},2400);
+
+function drawBrow(x,y,type){
+ctx.strokeStyle=EYE_COLOR;
+ctx.lineWidth=7;
+ctx.lineCap="round";
+ctx.beginPath();
+if(type==="up"){
+ctx.moveTo(x-50,y-75);
+ctx.quadraticCurveTo(x,y-105,x+50,y-75);
+}
+if(type==="down"){
+ctx.moveTo(x-50,y-105);
+ctx.quadraticCurveTo(x,y-75,x+50,y-105);
+}
+if(type==="flat"){
+ctx.moveTo(x-50,y-90);
+ctx.lineTo(x+50,y-90);
+}
+ctx.stroke();
+}
+
+function drawEye(x,y){
+let w=30,h=80;
+if(eyeMode==="sad")h=40;
+if(eyeMode==="excited")h=110;
+if(eyeMode==="shock")h=130;
+if(eyeMode==="unamused")h=25;
+if(eyeMode==="more_worried")h=60;
+if(eyeMode==="half_kill")h=100;
+if(eyeMode==="being_scary")h=120;
+if(eyeMode==="woozy")h=50;
+if(eyeMode==="angry")h=55;
+if(eyeMode==="wince")h=30;
+
+ctx.fillStyle=EYE_COLOR;
+ctx.beginPath();
+ctx.ellipse(x+lookX,y+lookY,w,h*blink,0,0,Math.PI*2);
+ctx.fill();
+
+if(eyeMode==="sad")drawBrow(x,y,"up");
+if(eyeMode==="angry")drawBrow(x,y,"down");
+if(eyeMode==="unamused")drawBrow(x,y,"flat");
+}
+
+function render(){
+ctx.clearRect(0,0,canvas.width,canvas.height);
+const cx=canvas.width/2;
+const cy=canvas.height/2;
+drawEye(cx-140,cy);
+drawEye(cx+140,cy);
+requestAnimationFrame(render);
+}
+render();
+
+function smooth(){
+lookX+=(targetX-lookX)*0.05;
+lookY+=(targetY-lookY)*0.05;
+requestAnimationFrame(smooth);
+}
+smooth();
+
+const faceDetection=new FaceDetection({
+locateFile:file=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+});
+faceDetection.setOptions({model:"short",minDetectionConfidence:0.5});
+
+faceDetection.onResults(r=>{
+if(r.detections.length){
+const b=r.detections[0].boundingBox;
+targetX=(b.xCenter-0.5)*200;
+targetY=(b.yCenter-0.5)*160;
+eyeMode="normal";
+}else{
+targetX=Math.sin(Date.now()/500)*120;
+targetY=Math.cos(Date.now()/600)*60;
+}
+});
+
+navigator.mediaDevices.getUserMedia({video:true}).then(s=>{
+video.srcObject=s;
+const cam=new Camera(video,{
+onFrame:async()=>{await faceDetection.send({image:video});}
+});
+cam.start();
+});
+
+cocoSsd.load().then(m=>objectModel=m);
+
+setInterval(()=>{
+if(!objectModel)return;
+objectModel.detect(video).then(p=>{
+lastSeenObjects=p.map(x=>x.class);
+});
+},3000);
+
+async function askV(text){
+const context=lastSeenObjects.length
+? `Kamerada gördüklerim: ${lastSeenObjects.join(", ")}`
+: "Kamerada net bir şey yok.";
+
+chatHistory.push({role:"user",content:text});
+
+const body={
+model:"gpt-4.1-mini",
+messages:[
+{role:"system",content:
+`Senin adın V. Sana adın sorulursa sadece "Benim adım V" dersin.
+Sarı gözlü, meraklı bir kamera yapay zekasısın.
+Kısa, zeki, Türkçe cevap ver.`},
+...chatHistory
+]
+};
+
+const r=await fetch("https://api.openai.com/v1/chat/completions",{
+method:"POST",
+headers:{
+"Content-Type":"application/json",
+"Authorization":"Bearer "+OPENAI_API_KEY
+},
+body:JSON.stringify(body)
+});
+const j=await r.json();
+const a=j.choices[0].message.content;
+chatHistory.push({role:"assistant",content:a});
+speak(a);
+}
+
+let rec;
+function setupMic(){
+rec=new webkitSpeechRecognition();
+rec.lang="tr-TR";
+rec.continuous=true;
+rec.onresult=e=>{
+const t=e.results[e.results.length-1][0].transcript;
+askV(t);
+};
+rec.onend=()=>rec.start();
+rec.start();
+}
+
+document.body.addEventListener("click",()=>{
+audioUnlocked=true;
+document.getElementById("hint").style.display="none";
+setupMic();
+},{once:true});
+</script>
+</body>
+  </html>
